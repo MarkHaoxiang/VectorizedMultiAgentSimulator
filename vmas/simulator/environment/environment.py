@@ -4,7 +4,7 @@
 import math
 import random
 from ctypes import byref
-from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
@@ -13,8 +13,8 @@ from gym import spaces
 from torch import Tensor
 
 import vmas.simulator.utils
-from vmas.simulator.core import Agent, TorchVectorizedObject
-from vmas.simulator.scenario import BaseScenario
+from vmas.simulator.core import Agent, TorchVectorizedObject, World
+from vmas.simulator.scenario import BaseScenario, DesignableScenario
 from vmas.simulator.utils import (
     AGENT_OBS_TYPE,
     ALPHABET,
@@ -49,26 +49,20 @@ class Environment(TorchVectorizedObject):
         terminated_truncated: bool = False,
         **kwargs,
     ):
-        if multidiscrete_actions:
-            assert (
-                not continuous_actions
-            ), "When asking for multidiscrete_actions, make sure continuous_actions=False"
+        TorchVectorizedObject.__init__(self, num_envs, torch.device(device))
+        assert (
+            not multidiscrete_actions or not continuous_actions
+        ), "When asking for multidiscrete_actions, make sure continuous_actions=False"
 
         self.scenario = scenario
         self.num_envs = num_envs
-        TorchVectorizedObject.__init__(self, num_envs, torch.device(device))
-        self.world = self.scenario.env_make_world(self.num_envs, self.device, **kwargs)
-
-        self.agents = self.world.policy_agents
-        self.n_agents = len(self.agents)
         self.max_steps = max_steps
         self.continuous_actions = continuous_actions
         self.dict_spaces = dict_spaces
         self.clamp_action = clamp_actions
         self.grad_enabled = grad_enabled
         self.terminated_truncated = terminated_truncated
-
-        observations = self.reset(seed=seed)
+        _, observations = self._init_world(seed, **kwargs)
 
         # configure spaces
         self.multidiscrete_actions = multidiscrete_actions
@@ -81,6 +75,42 @@ class Environment(TorchVectorizedObject):
         self.visible_display = None
         self.text_lines = None
 
+    def _init_world(self, seed: Optional[int], **kwargs) -> Tuple[World, Any]:
+        self.world = self.scenario.env_make_world(self.num_envs, self.device, **kwargs)
+        self.agents = self.world.policy_agents
+        self.n_agents = len(self.agents)
+        observations = self.reset(seed=seed)
+        return self.world, observations
+
+    def reset_at(
+        self,
+        index: Union[int, None],
+        return_observations: bool = True,
+        return_info: bool = False,
+        return_dones: bool = False,
+    ):
+        """
+        Resets the environment at index.
+        If index is None, then resets all environments with vectorizations.
+        Returns observations for all envs and agents.
+        """
+        if isinstance(index, int):
+            self._check_batch_index(index)
+            self.steps[index] = 0
+        else:
+            self.steps = torch.zeros(self.num_envs, device=self.device)
+
+        self.scenario.env_reset_world_at(env_index=index)
+
+        result = self.get_from_scenario(
+            get_observations=return_observations,
+            get_infos=return_info,
+            get_rewards=False,
+            get_dones=return_dones,
+        )
+
+        return result[0] if result and len(result) == 1 else result
+
     def reset(
         self,
         seed: Optional[int] = None,
@@ -89,46 +119,17 @@ class Environment(TorchVectorizedObject):
         return_dones: bool = False,
     ):
         """
-        Resets the environment in a vectorized way
-        Returns observations for all envs and agents
+        Resets all environments with vectorizations.
+        Returns observations for all envs and agents.
         """
         if seed is not None:
             self.seed(seed)
-        # reset world
-        self.scenario.env_reset_world_at(env_index=None)
-        self.steps = torch.zeros(self.num_envs, device=self.device)
-
-        result = self.get_from_scenario(
-            get_observations=return_observations,
-            get_infos=return_info,
-            get_rewards=False,
-            get_dones=return_dones,
+        return self.reset_at(
+            index=None,
+            return_observations=return_observations,
+            return_info=return_info,
+            return_dones=return_dones,
         )
-        return result[0] if result and len(result) == 1 else result
-
-    def reset_at(
-        self,
-        index: int,
-        return_observations: bool = True,
-        return_info: bool = False,
-        return_dones: bool = False,
-    ):
-        """
-        Resets the environment at index
-        Returns observations for all agents in that environment
-        """
-        self._check_batch_index(index)
-        self.scenario.env_reset_world_at(index)
-        self.steps[index] = 0
-
-        result = self.get_from_scenario(
-            get_observations=return_observations,
-            get_infos=return_info,
-            get_rewards=False,
-            get_dones=return_dones,
-        )
-
-        return result[0] if result and len(result) == 1 else result
 
     def get_from_scenario(
         self,
@@ -138,56 +139,43 @@ class Environment(TorchVectorizedObject):
         get_dones: bool,
         dict_agent_names: Optional[bool] = None,
     ):
-        if not get_infos and not get_dones and not get_rewards and not get_observations:
-            return
-        if dict_agent_names is None:
-            dict_agent_names = self.dict_spaces
 
+        # Edge case: no information requested
+        if not (get_infos or get_dones or get_rewards or get_observations):
+            return
+
+        # Initialization
         obs = rewards = infos = terminated = truncated = dones = None
 
-        if get_observations:
-            obs = {} if dict_agent_names else []
-        if get_rewards:
-            rewards = {} if dict_agent_names else []
-        if get_infos:
-            infos = {} if dict_agent_names else []
+        def get_data(fetch_fn, clone_fn):
+            if (dict_agent_names is None and self.dict_spaces) or dict_agent_names:
+                return {agent.name: clone_fn(fetch_fn(agent)) for agent in self.agents}
+            else:
+                return [clone_fn(fetch_fn(agent)) for agent in self.agents]
 
-        if get_rewards:
-            for agent in self.agents:
-                reward = self.scenario.reward(agent).clone()
-                if dict_agent_names:
-                    rewards.update({agent.name: reward})
-                else:
-                    rewards.append(reward)
         if get_observations:
-            for agent in self.agents:
-                observation = TorchUtils.recursive_clone(
-                    self.scenario.observation(agent)
-                )
-                if dict_agent_names:
-                    obs.update({agent.name: observation})
-                else:
-                    obs.append(observation)
+            obs = get_data(self.scenario.observation, TorchUtils.recursive_clone)
+        if get_rewards:
+            rewards = get_data(self.scenario.reward, lambda x: x.clone())
         if get_infos:
-            for agent in self.agents:
-                info = TorchUtils.recursive_clone(self.scenario.info(agent))
-                if dict_agent_names:
-                    infos.update({agent.name: info})
-                else:
-                    infos.append(info)
-
-        if self.terminated_truncated:
-            if get_dones:
+            infos = get_data(self.scenario.info, TorchUtils.recursive_clone)
+        if get_dones:
+            if self.terminated_truncated:
                 terminated, truncated = self.done()
-            result = [obs, rewards, terminated, truncated, infos]
-        else:
-            if get_dones:
+            else:
                 dones = self.done()
-            result = [obs, rewards, dones, infos]
 
-        return [data for data in result if data is not None]
+        # Aggregate result, filtering out None
+        return [
+            data
+            for data in [obs, rewards, terminated, truncated, dones, infos]
+            if data is not None
+        ]
 
     def seed(self, seed=None):
+        # TODO markli:
+        # I think there is an argument to be made that we should associate a random number generator with each
+        # environment instead of using global seeds. This may be susceptible to users reseeding elsewhere.
         if seed is None:
             seed = 0
         torch.manual_seed(seed)
@@ -836,12 +824,14 @@ class Environment(TorchVectorizedObject):
             for i in range(
                 0,
                 len(boundary_points),
-                1
-                if (
-                    self.world.x_semidim is not None
-                    and self.world.y_semidim is not None
-                )
-                else 2,
+                (
+                    1
+                    if (
+                        self.world.x_semidim is not None
+                        and self.world.y_semidim is not None
+                    )
+                    else 2
+                ),
             ):
                 start = boundary_points[i]
                 end = boundary_points[(i + 1) % len(boundary_points)]
@@ -921,3 +911,100 @@ class Environment(TorchVectorizedObject):
         device = torch.device(device)
         self.scenario.to(device)
         super().to(device)
+
+
+class ConfigurableEnvironment(Environment):
+
+    def __init__(
+        self,
+        scenario: DesignableScenario,
+        scenario_design: Optional[List] = None,
+        num_envs: int = 32,
+        device: DEVICE_TYPING = "cpu",
+        max_steps: Optional[int] = None,
+        continuous_actions: bool = True,
+        seed: Optional[int] = None,
+        dict_spaces: bool = False,
+        multidiscrete_actions: bool = False,
+        clamp_actions: bool = False,
+        grad_enabled: bool = False,
+        terminated_truncated: bool = False,
+        **kwargs,
+    ):  
+        self._initial_scenario_design = scenario_design
+
+        super().__init__(
+            scenario=scenario,
+            num_envs=num_envs,
+            device=device,
+            max_steps=max_steps,
+            continuous_actions=continuous_actions,
+            seed=seed,
+            dict_spaces=dict_spaces,
+            multidiscrete_actions=multidiscrete_actions,
+            clamp_actions=clamp_actions,
+            grad_enabled=grad_enabled,
+            terminated_truncated=terminated_truncated,
+            **kwargs,
+        )
+        assert isinstance(
+            self.scenario, DesignableScenario
+        ), f"Expected DesignableScenario but got {type(self.scenario)}"
+        self.scenario = self.scenario  # Allows typehint
+
+    def _init_world(self, seed: Optional[int], **kwargs) -> Tuple[World, Any]:
+        self.world = self.scenario.env_make_world(self.num_envs, self.device, **kwargs)
+        # Randomize if not provided
+        if self._initial_scenario_design is None:
+            design_space = self.scenario.design_space
+            design_space.seed(seed)
+            self._initial_scenario_design = [design_space.sample() for _ in range(self.num_envs)]
+        observations = self.design(seed, self._initial_scenario_design)
+        return self.world, observations
+
+    def design_at(
+        self,
+        index: int,
+        scenario_design: Optional[List] = None,
+        return_observations: bool = True,
+        return_info: bool = False,
+        return_dones: bool = False,
+    ):
+        if isinstance(index, int):
+            self._check_batch_index(index)
+            self.steps[index] = 0
+        else:
+            self.steps = torch.zeros(self.num_envs, device=self.device)
+
+        self.scenario.env_design_world_at(scenario_design, env_index=index)
+
+        result = self.get_from_scenario(
+            get_observations=return_observations,
+            get_infos=return_info,
+            get_rewards=False,
+            get_dones=return_dones,
+        )
+
+        return result[0] if result and len(result) == 1 else result
+
+    def design(
+        self,
+        seed: Optional[int] = None,
+        scenario_design: Optional[List] = None,
+        return_observations: bool = True,
+        return_info: bool = False,
+        return_dones: bool = False,
+    ):
+        """
+        Resets all environments with vectorizations.
+        Returns observations for all envs and agents.
+        """
+        if seed is not None:
+            self.seed(seed)
+        return self.design_at(
+            index=None,
+            scenario_design=scenario_design,
+            return_observations=return_observations,
+            return_info=return_info,
+            return_dones=return_dones,
+        )

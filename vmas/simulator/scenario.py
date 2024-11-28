@@ -5,6 +5,7 @@ import typing
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
+from gym.spaces import Space
 import torch
 from torch import Tensor
 
@@ -61,7 +62,7 @@ class BaseScenario(ABC):
 
     @property
     def world(self):
-        """The :class:`~vmas.simulator.core.World` associated toi this scenario."""
+        """The :class:`~vmas.simulator.core.World` associated to this scenario."""
         assert (
             self._world is not None
         ), "You first need to set `self._world` in the `make_world` method"
@@ -103,7 +104,7 @@ class BaseScenario(ABC):
         In this function the user should instantiate the world and insert agents and landmarks in it.
 
         Args:
-            batch_dim (int): the number of vecotrized environments.
+            batch_dim (int): the number of vectorized environments.
             device (Union[str, int, torch.device], optional): the device of the environmemnt.
             kwargs (dict, optional): named arguments passed from environment creation
 
@@ -437,3 +438,38 @@ class BaseScenario(ABC):
             >>>         return
         """
         return
+
+class DesignableScenario(BaseScenario, ABC):
+    """Base class for environment design scenarios
+
+    An environment design scenario is a scenario where the environment can be configured as part of the problem.
+    For example, this is relevant to the research areas
+        - Unsupervised environment design
+        - Agent-environment co-design
+        - Domain randomization
+        - Meta-learning
+    """
+    def __init__(self):
+        super().__init__()
+        self._design = None
+    
+    @property
+    def design(self) -> List:
+        """ A list of length self.world.batch_dim, where each element encodes the design of the corresponding level. """
+        assert (
+            self._design is not None
+        ), "You first need to set `self._design`"
+        return self._design
+
+    def env_design_world_at(self, scenario_design, env_index: typing.Optional[int] = None):
+        if env_index is None:
+            self._design[env_index] = scenario_design
+        else:
+            self._design = scenario_design
+        self.env_reset_world_at(env_index)
+
+    @property
+    @abstractmethod
+    def design_space(self) -> Space:
+        raise NotImplementedError
+    
