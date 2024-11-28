@@ -930,7 +930,7 @@ class ConfigurableEnvironment(Environment):
         grad_enabled: bool = False,
         terminated_truncated: bool = False,
         **kwargs,
-    ):  
+    ):
         self._initial_scenario_design = scenario_design
 
         super().__init__(
@@ -958,7 +958,9 @@ class ConfigurableEnvironment(Environment):
         if self._initial_scenario_design is None:
             design_space = self.scenario.design_space
             design_space.seed(seed)
-            self._initial_scenario_design = [design_space.sample() for _ in range(self.num_envs)]
+            self._initial_scenario_design = [
+                design_space.sample() for _ in range(self.num_envs)
+            ]
         observations = self.design(seed, self._initial_scenario_design)
         return self.world, observations
 

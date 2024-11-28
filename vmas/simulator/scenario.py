@@ -439,6 +439,7 @@ class BaseScenario(ABC):
         """
         return
 
+
 class DesignableScenario(BaseScenario, ABC):
     """Base class for environment design scenarios
 
@@ -449,19 +450,20 @@ class DesignableScenario(BaseScenario, ABC):
         - Domain randomization
         - Meta-learning
     """
+
     def __init__(self):
         super().__init__()
         self._design = None
-    
+
     @property
     def design(self) -> List:
-        """ A list of length self.world.batch_dim, where each element encodes the design of the corresponding level. """
-        assert (
-            self._design is not None
-        ), "You first need to set `self._design`"
+        """A list of length self.world.batch_dim, where each element encodes the design of the corresponding level."""
+        assert self._design is not None, "You first need to set `self._design`"
         return self._design
 
-    def env_design_world_at(self, scenario_design, env_index: typing.Optional[int] = None):
+    def env_design_world_at(
+        self, scenario_design, env_index: typing.Optional[int] = None
+    ):
         if env_index is None:
             self._design[env_index] = scenario_design
         else:
@@ -472,4 +474,3 @@ class DesignableScenario(BaseScenario, ABC):
     @abstractmethod
     def design_space(self) -> Space:
         raise NotImplementedError
-    
