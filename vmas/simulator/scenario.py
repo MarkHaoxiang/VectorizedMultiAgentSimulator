@@ -3,8 +3,7 @@
 #  All rights reserved.
 import typing
 from abc import ABC, abstractmethod
-from typing import List, Optional, Generic, TypeVar, Type
-
+from typing import List, Optional, Generic, TypeVar, Type, Literal
 from pydantic import BaseModel, ConfigDict
 from gym.spaces import Space
 import torch
@@ -466,7 +465,6 @@ class BaseScenario(Generic[Config], ABC):
         """
         return
 
-
 class DesignableScenario(BaseScenario, ABC):
     """Base class for environment design scenarios
 
@@ -497,7 +495,17 @@ class DesignableScenario(BaseScenario, ABC):
             self._design = scenario_design
         self.env_reset_world_at(env_index)
 
+    def randomize_design(self, env_index: typing.Optional[int] = None):
+        if env_index is None:
+            self._design = [self.design_space.sample() for _ in range(len(self._design))]
+        else:
+            self._design[env_index] = self.design_space.sample()
+        return self._design
+
     @property
     @abstractmethod
     def design_space(self) -> Space:
         raise NotImplementedError
+
+class CoDesignableScenario(DesignableScenario, ABC):
+    pass

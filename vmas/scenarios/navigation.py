@@ -1,17 +1,20 @@
 #  Copyright (c) 2022-2024.
 #  ProrokLab (https://www.proroklab.org/)
 #  All rights reserved.
-from abc import ABC, abstractmethod
+from abc import ABC
+import random
 import typing
 from typing import Callable, Dict, List, Optional, Generic, TypeVar
 
+from gym import spaces
+import numpy as np
 import torch
 from torch import Tensor
 
 from vmas import render_interactively
 from vmas.simulator.core import Agent, Box, Entity, Landmark, Sphere, World
 from vmas.simulator.heuristic_policy import BaseHeuristicPolicy
-from vmas.simulator.scenario import BaseScenario, BaseScenarioConfig
+from vmas.simulator.scenario import BaseScenario, BaseScenarioConfig, DesignableScenario
 from vmas.simulator.sensors import Lidar
 from vmas.simulator.utils import Color, ScenarioUtils, X, Y
 
@@ -57,12 +60,15 @@ class BaseNavigationConfig(BaseScenarioConfig):
 class ScenarioConfig(BaseNavigationConfig):
     pass
 
+
 class ObstacleNavigationConfig(BaseNavigationConfig):
     # Number of obstacles
     n_obstacles: int = 2
 
 
 Config = TypeVar("Config", bound=BaseNavigationConfig)
+
+
 class BaseNavigationScenario(BaseScenario[Config], Generic[Config], ABC):
     def make_world(
         self,
@@ -117,14 +123,12 @@ class BaseNavigationScenario(BaseScenario[Config], Generic[Config], ABC):
             (0.89, 0.10, 0.11),
             (0.87, 0.87, 0),
         ]
-        colors = torch.cat(
-            [
-                torch.tensor(known_colors, device=device),
-                torch.randn(
-                    (max(self.config.n_agents - len(known_colors), 0), 3), device=device
-                ),
-            ]
-        )
+
+        colors = known_colors + [
+            (random.random(), random.random(), random.random())
+            for _ in range(max(0, self.config.n_agents - len(known_colors)))
+        ]
+
         entity_filter_agents: Callable[[Entity], bool] = lambda e: isinstance(e, Agent)
 
         # Add agents
@@ -341,7 +345,9 @@ class Scenario(BaseNavigationScenario[ScenarioConfig]):
                 )
 
 
-class ObstacleScenario(BaseNavigationScenario[ObstacleNavigationConfig]):
+class ObstacleScenario(
+    BaseNavigationScenario[ObstacleNavigationConfig], DesignableScenario
+):
     config_class = ObstacleNavigationConfig
 
     def make_world(
@@ -354,7 +360,7 @@ class ObstacleScenario(BaseNavigationScenario[ObstacleNavigationConfig]):
         world = super().make_world(batch_dim, device, config, **kwargs)
 
         # Add Obstacles
-        self.obstacles = []
+        self.obstacles: List[Landmark] = []
         for i in range(self.config.n_obstacles):
             obstacle = Landmark(
                 name=f"obstacle {i}",
@@ -367,7 +373,26 @@ class ObstacleScenario(BaseNavigationScenario[ObstacleNavigationConfig]):
             self.obstacles.append(obstacle)
 
         return world
-    
+
+    def randomize_design(self, env_index: int | None = None):
+        # Random selection of positions such that there is sufficient space between entities
+        ScenarioUtils.spawn_entities_randomly(
+            self.world.agents + self.obstacles,
+            self.world,
+            env_index,
+            self.min_distance_between_entities,
+            (-self.config.world_spawning_x, self.config.world_spawning_x),
+            (-self.config.world_spawning_y, self.config.world_spawning_y),
+        )
+
+        occupied_positions = torch.stack(
+            [agent.state.pos for agent in self.world.agents]
+            + [obstacle.state.pos for obstacle in self.obstacles],
+            dim=1,
+        )
+        if env_index is not None:
+            occupied_positions = occupied_positions[env_index].unsqueeze(0)
+
     def reset_world_at(self, env_index: int | None = None):
         ScenarioUtils.spawn_entities_randomly(
             self.world.agents + self.obstacles,
@@ -420,6 +445,35 @@ class ObstacleScenario(BaseNavigationScenario[ObstacleNavigationConfig]):
                     )
                     * self.config.pos_shaping_factor
                 )
+
+    @property
+    def design_space(self):
+        spawning_limit_high = np.ndarray(
+            [self.config.world_spawning_x, self.config.world_spawning_y]
+        )
+        spawning_limit_low = -spawning_limit_high
+        return spaces.Dict(
+            {
+                "agent_locations": spaces.Box(
+                    spawning_limit_low,
+                    spawning_limit_high,
+                    (self.config.n_agents, 2),
+                    dtype=np.float32,
+                ),
+                "obstacle_locations": spaces.Box(
+                    spawning_limit_low,
+                    spawning_limit_high,
+                    (self.config.n_obstacles, 2),
+                    dtype=torch.float32,
+                ),
+                "goal_locations": spaces.Box(
+                    spawning_limit_low,
+                    spawning_limit_high,
+                    (self.config.n_agents, 2),
+                    dtype=torch.float32,
+                ),
+            }
+        )
 
 
 class HeuristicPolicy(BaseHeuristicPolicy):

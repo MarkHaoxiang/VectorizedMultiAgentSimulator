@@ -956,11 +956,8 @@ class ConfigurableEnvironment(Environment):
         self.world = self.scenario.env_make_world(self.num_envs, self.device, **kwargs)
         # Randomize if not provided
         if self._initial_scenario_design is None:
-            design_space = self.scenario.design_space
-            design_space.seed(seed)
-            self._initial_scenario_design = [
-                design_space.sample() for _ in range(self.num_envs)
-            ]
+            self.scenario.design_space.seed(seed)
+            self._initial_scenario_design = self.scenario.randomize_design(batch=True)
         observations = self.design(seed, self._initial_scenario_design)
         return self.world, observations
 
