@@ -3,16 +3,15 @@
 #  All rights reserved.
 from abc import ABC, abstractmethod
 import typing
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Generic, TypeVar
 
-from pydantic import BaseModel, ConfigDict
 import torch
 from torch import Tensor
 
 from vmas import render_interactively
 from vmas.simulator.core import Agent, Box, Entity, Landmark, Sphere, World
 from vmas.simulator.heuristic_policy import BaseHeuristicPolicy
-from vmas.simulator.scenario import BaseScenario
+from vmas.simulator.scenario import BaseScenario, BaseScenarioConfig
 from vmas.simulator.sensors import Lidar
 from vmas.simulator.utils import Color, ScenarioUtils, X, Y
 
@@ -20,8 +19,7 @@ if typing.TYPE_CHECKING:
     from vmas.simulator.rendering import Geom
 
 
-class BaseNavigationConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class BaseNavigationConfig(BaseScenarioConfig):
     # Number of navigation agents
     n_agents: int = 4
     # Enable agent collisions
@@ -56,28 +54,26 @@ class BaseNavigationConfig(BaseModel):
     agent_collision_penalty: float = -1.0
 
 
+class ScenarioConfig(BaseNavigationConfig):
+    pass
+
 class ObstacleNavigationConfig(BaseNavigationConfig):
     # Number of obstacles
     n_obstacles: int = 2
 
 
-class Scenario_(BaseScenario, ABC):
+Config = TypeVar("Config", bound=BaseNavigationConfig)
+class BaseNavigationScenario(BaseScenario[Config], Generic[Config], ABC):
     def make_world(
         self,
         batch_dim: int,
         device: torch.device,
-        config: Optional[BaseNavigationConfig] = None,
+        config: Optional[Config] = None,
         **kwargs,
     ):
-        if config is None:
-            config = BaseNavigationConfig(**kwargs)
-        else:
-            assert isinstance(
-                config, BaseNavigationConfig
-            ), f"Expected BaseNavigationConfig but got {type(config)}"
+        BaseScenario._setup_config(self, config, **kwargs)
 
         self.plot_grid = False
-        self.config = config
         self.min_distance_between_entities = self.config.agent_radius * 2 + 0.05
         self.min_collision_distance = 0.005
 
@@ -288,7 +284,9 @@ class Scenario_(BaseScenario, ABC):
         return geoms
 
 
-class Scenario(Scenario_):
+class Scenario(BaseNavigationScenario[ScenarioConfig]):
+    config_class = ScenarioConfig
+
     def reset_world_at(self, env_index: int = None):
         ScenarioUtils.spawn_entities_randomly(
             self.world.agents,
@@ -343,18 +341,20 @@ class Scenario(Scenario_):
                 )
 
 
-class ObstacleScenario(Scenario_):
+class ObstacleScenario(BaseNavigationScenario[ObstacleNavigationConfig]):
+    config_class = ObstacleNavigationConfig
+
     def make_world(
         self,
         batch_dim: int,
         device: torch.device,
         config: ObstacleNavigationConfig | None = None,
         **kwargs,
-    ):
-        super().make_world(batch_dim, device, config, **kwargs)
-        self.config: ObstacleNavigationConfig = self.config
-        # Add Obstacles
+    ) -> World:
+        world = super().make_world(batch_dim, device, config, **kwargs)
 
+        # Add Obstacles
+        self.obstacles = []
         for i in range(self.config.n_obstacles):
             obstacle = Landmark(
                 name=f"obstacle {i}",
@@ -363,7 +363,63 @@ class ObstacleScenario(Scenario_):
                 shape=Box(),
                 color=Color.RED,
             )
-            self.world.add_landmark(obstacle)
+            world.add_landmark(obstacle)
+            self.obstacles.append(obstacle)
+
+        return world
+    
+    def reset_world_at(self, env_index: int | None = None):
+        ScenarioUtils.spawn_entities_randomly(
+            self.world.agents + self.obstacles,
+            self.world,
+            env_index,
+            self.min_distance_between_entities,
+            (-self.config.world_spawning_x, self.config.world_spawning_x),
+            (-self.config.world_spawning_y, self.config.world_spawning_y),
+        )
+
+        occupied_positions = torch.stack(
+            [agent.state.pos for agent in self.world.agents], dim=1
+        )
+        if env_index is not None:
+            occupied_positions = occupied_positions[env_index].unsqueeze(0)
+
+        goal_poses = []
+        for _ in self.world.agents:
+            position = ScenarioUtils.find_random_pos_for_entity(
+                occupied_positions=occupied_positions,
+                env_index=env_index,
+                world=self.world,
+                min_dist_between_entities=self.min_distance_between_entities,
+                x_bounds=(-self.config.world_spawning_x, self.config.world_spawning_x),
+                y_bounds=(-self.config.world_spawning_y, self.config.world_spawning_y),
+            )
+            goal_poses.append(position.squeeze(1))
+            occupied_positions = torch.cat([occupied_positions, position], dim=1)
+
+        for i, agent in enumerate(self.world.agents):
+            if self.config.split_goals:
+                goal_index = int(i // self.config.agents_with_same_goal)
+            else:
+                goal_index = 0 if i < self.config.agents_with_same_goal else i
+
+            agent.goal.set_pos(goal_poses[goal_index], batch_index=env_index)
+
+            if env_index is None:
+                agent.pos_shaping = (
+                    torch.linalg.vector_norm(
+                        agent.state.pos - agent.goal.state.pos,
+                        dim=1,
+                    )
+                    * self.config.pos_shaping_factor
+                )
+            else:
+                agent.pos_shaping[env_index] = (
+                    torch.linalg.vector_norm(
+                        agent.state.pos[env_index] - agent.goal.state.pos[env_index]
+                    )
+                    * self.config.pos_shaping_factor
+                )
 
 
 class HeuristicPolicy(BaseHeuristicPolicy):

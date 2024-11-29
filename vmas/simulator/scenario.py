@@ -3,8 +3,9 @@
 #  All rights reserved.
 import typing
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import List, Optional, Generic, TypeVar, Type
 
+from pydantic import BaseModel, ConfigDict
 from gym.spaces import Space
 import torch
 from torch import Tensor
@@ -22,7 +23,14 @@ if typing.TYPE_CHECKING:
     from vmas.simulator.rendering import Geom
 
 
-class BaseScenario(ABC):
+class BaseScenarioConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+Config = TypeVar("Config", bound=BaseScenarioConfig)
+
+
+class BaseScenario(Generic[Config], ABC):
     """Base class for scenarios.
 
     This is the class that scenarios inherit from.
@@ -41,8 +49,9 @@ class BaseScenario(ABC):
     - :class:`process_action`
     - :class:`pre_step`
     - :class:`post_step`
-
     """
+
+    config_class: Type[Config]
 
     def __init__(self):
         """Do not override."""
@@ -59,6 +68,9 @@ class BaseScenario(ABC):
         """If :class:`~plot_grid`, the distance between lines in the background grid. This can be changed in the :class:`~make_world` function. """
         self.visualize_semidims = True
         """Whether to display boundaries in dimension-limited environment. This can be changed in the :class:`~make_world` function. """
+        self.config: Config = None
+        """The configuration of the scenario."""
+
 
     @property
     def world(self):
@@ -96,9 +108,24 @@ class BaseScenario(ABC):
         # Customizable action processor
         self.process_action(agent)
         agent.dynamics.check_and_process_action()
+    
+    def _setup_config(self, config: Optional[Config], **kwargs) -> None:
+        if config is None:
+            self.config = self.config_class(**kwargs)
+        else:
+            assert isinstance(
+                config, self.config_class
+            ), f"Expected {self.config_class} but got {type(config)}"
+            self.config = config
 
     @abstractmethod
-    def make_world(self, batch_dim: int, device: torch.device, **kwargs) -> World:
+    def make_world(
+        self,
+        batch_dim: int,
+        device: torch.device,
+        config: Optional[Config] = None,
+        **kwargs,
+    ) -> World:
         """
         This function needs to be implemented when creating a scenario.
         In this function the user should instantiate the world and insert agents and landmarks in it.
