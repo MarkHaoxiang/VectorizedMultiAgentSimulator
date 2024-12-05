@@ -956,11 +956,13 @@ class ConfigurableEnvironment(Environment):
         self.world = self.scenario.env_make_world(self.num_envs, self.device, **kwargs)
         self.agents = self.world.policy_agents
         self.n_agents = len(self.agents)
+        if self.seed is not None:
+            self.seed(seed)
         # Randomize if not provided
         if self._initial_scenario_design is None:
             self.scenario.design_space.seed(seed)
             self._initial_scenario_design = self.scenario.randomize_design()
-        observations = self.design(seed, self._initial_scenario_design)
+        observations = self.design(scenario_design=self._initial_scenario_design)
         return self.world, observations
 
     def design_at(

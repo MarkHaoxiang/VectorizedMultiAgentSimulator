@@ -3,11 +3,9 @@ from __future__ import annotations
 #  Copyright (c) 2022-2024.
 #  ProrokLab (https://www.proroklab.org/)
 #  All rights reserved.
-from abc import ABC
 import random
 import typing
-from typing import Callable, Generic
-
+from typing import Callable
 from gym import spaces
 import numpy as np
 import torch
@@ -18,7 +16,7 @@ from vmas.simulator.core import Agent, Box, Entity, Landmark, Sphere, World
 from vmas.simulator.heuristic_policy import BaseHeuristicPolicy
 from vmas.simulator.scenario import BaseScenario, BaseScenarioConfig, DesignableScenario
 from vmas.simulator.sensors import Lidar
-from vmas.simulator.utils import Color, ScenarioUtils, X, Y
+from vmas.simulator.utils import Color, ScenarioUtils, RenderUtils, X, Y
 
 if typing.TYPE_CHECKING:
     from vmas.simulator.rendering import Geom
@@ -168,7 +166,9 @@ class BaseNavigationScenario[Config: BaseNavigationConfig](BaseScenario[Config])
                     else None
                 ),
             )
+            # TODO markli: Scenario specific agent class
             agent.pos_rew = torch.zeros(batch_dim, device=device)
+            agent.pos_shaping = torch.zeros(batch_dim, device=device)
             agent.agent_collision_rew = agent.pos_rew.clone()
             world.add_agent(agent)
 
@@ -272,32 +272,9 @@ class BaseNavigationScenario[Config: BaseNavigationConfig](BaseScenario[Config])
         }
 
     def extra_render(self, env_index: int = 0) -> list[Geom]:
-        # TODO markli: This should probably be packaged as an util.
-        from vmas.simulator import rendering
-
-        geoms: list[Geom] = []
-
-        # Communication lines
-        for i, agent1 in enumerate(self.world.agents):
-            for j, agent2 in enumerate(self.world.agents):
-                if j <= i:
-                    continue
-                agent_dist = torch.linalg.vector_norm(
-                    agent1.state.pos - agent2.state.pos, dim=-1
-                )
-                if agent_dist[env_index] <= self.config.comms_range:
-                    color = Color.BLACK.value
-                    line = rendering.Line(
-                        (agent1.state.pos[env_index]),
-                        (agent2.state.pos[env_index]),
-                        width=1,
-                    )
-                    xform = rendering.Transform()
-                    line.add_attr(xform)
-                    line.set_color(*color)
-                    geoms.append(line)
-
-        return geoms
+        return RenderUtils.render_communication_lines(
+            self.world.agents, self.config.comms_range, env_index
+        )
 
 
 class Scenario(BaseNavigationScenario[ScenarioConfig]):
@@ -378,7 +355,7 @@ class ObstacleScenario(
                 name=f"obstacle {i}",
                 collide=True,
                 movable=False,
-                shape=Box(),
+                shape=Box(length=0.2, width=0.2),
                 color=Color.RED,
             )
             world.add_landmark(obstacle)
@@ -388,7 +365,7 @@ class ObstacleScenario(
 
     def randomize_design(self, env_index: int | None = None):
         # Random selection of positions such that there is sufficient space between entities
-        ScenarioUtils.spawn_entities_randomly(  # TODO: Shouldn't actually handle spawning here
+        ScenarioUtils.spawn_entities_randomly(  # TODO markli: Shouldn't actually handle spawning here
             self.world.agents + self.obstacles + self.goals,
             self.world,
             env_index,
@@ -397,96 +374,55 @@ class ObstacleScenario(
             (-self.config.world_spawning_y, self.config.world_spawning_y),
         )
 
-        # Extract Positions
-        if env_index is None:
-            return [
-                {
-                    "agent_locations": np.array(
-                        [
-                            agent.state.pos[index].cpu().numpy()
-                            for agent in self.world.agents
-                        ]
-                    ),
-                    "obstacle_locations": np.array(
-                        [
-                            obstacle.state.pos[index].cpu().numpy()
-                            for obstacle in self.world.agents
-                        ]
-                    ),
-                    "goal_locations": np.array(
-                        [
-                            goal.state.pos[index].cpu().numpy()
-                            for goal in self.world.agents
-                        ]
-                    ),
-                }
-                for index in range(self.world.batch_dim)
-            ]
-        else:
+        def get_design(index):
             return {
                 "agent_locations": np.array(
                     [
-                        agent.state.pos[env_index].cpu().numpy()
+                        # TODO markli: These two lines should be an utility
+                        agent.state.pos[index].cpu().numpy()
                         for agent in self.world.agents
                     ]
                 ),
                 "obstacle_locations": np.array(
                     [
-                        obstacle.state.pos[env_index].cpu().numpy()
-                        for obstacle in self.world.agents
+                        obstacle.state.pos[index].cpu().numpy()
+                        for obstacle in self.obstacles
                     ]
                 ),
                 "goal_locations": np.array(
-                    [
-                        goal.state.pos[env_index].cpu().numpy()
-                        for goal in self.world.agents
-                    ]
+                    [goal.state.pos[index].cpu().numpy() for goal in self.goals]
                 ),
             }
 
+        # Extract Positions
+        if env_index is None:
+            return [get_design(index) for index in range(self.world.batch_dim)]
+        else:
+            return get_design(env_index)
+
     def reset_world_at(self, env_index: int | None = None):
-        # Spawn Obstacles
-        if env_index is None:
-            pos = torch.Tensor([env["obstacle_locations"] for env in self.design])
-        else:
-            pos = torch.Tensor(self.design[env_index]["obstacle_locations"])
-        for i, obstacle in enumerate(self.obstacles):
-            obstacle.set_pos(pos[:, i, :].squeeze(1), batch_index=env_index)
+        def spawn_entities_from_design(entities: list[Entity], key: str):
+            if env_index is None:
+                pos = torch.Tensor([env[key] for env in self.design])
+            else:
+                pos = torch.Tensor(self.design[env_index][key])
+            for i, entity in enumerate(entities):
+                entity.set_pos(pos[:, i, :].squeeze(1), batch_index=env_index)
 
-        # Spawn Agents
-        if env_index is None:
-            pos = torch.Tensor([env["agent_locations"] for env in self.design])
-        else:
-            pos = torch.Tensor(self.design[env_index]["agent_locations"])
-        for i, agent in enumerate(self.world.agents):
-            agent.set_pos(pos[:, i, :].squeeze(1), batch_index=env_index)
-
-        # Spawn Goals
-        if env_index is None:
-            pos = torch.Tensor([env["goal_locations"] for env in self.design])
-        else:
-            pos = torch.Tensor(self.design[env_index]["goal_locations"])
-        for i, goal in enumerate(self.goals):
-            goal.set_pos(pos[:, i, :].squeeze(1), batch_index=env_index)
+        spawn_entities_from_design(self.obstacles, "obstacle_locations")
+        spawn_entities_from_design(self.world.agents, "agent_locations")
+        spawn_entities_from_design(self.goals, "goal_locations")
 
         # Position Shaping
+        index = slice(None) if env_index is None else env_index
         for agent in self.world.agents:
-            if env_index is None:
-                agent.pos_shaping = (
-                    torch.linalg.vector_norm(
-                        agent.state.pos - agent.goal.state.pos,
-                        dim=1,
-                    )
-                    * self.config.pos_shaping_factor
+            agent.pos_shaping[index] = (
+                torch.linalg.vector_norm(
+                    agent.state.pos[index] - agent.goal.state.pos[index]
                 )
-            else:
-                agent.pos_shaping[env_index] = (
-                    torch.linalg.vector_norm(
-                        agent.state.pos[env_index] - agent.goal.state.pos[env_index]
-                    )
-                    * self.config.pos_shaping_factor
-                )
-        # TODO: Check validity of occupied positions
+                * self.config.pos_shaping_factor
+            )
+        # TODO: Check validity of occupied positions, or develop post processing method
 
     @property
     def design_space(self):

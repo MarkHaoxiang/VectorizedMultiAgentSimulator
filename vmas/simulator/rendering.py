@@ -19,7 +19,7 @@ import pyglet
 import six
 import torch
 
-from vmas.simulator.utils import TorchUtils, x_to_rgb_colormap
+from vmas.simulator.utils import TorchUtils, RenderUtils
 
 try:
     from pyglet.gl import (

@@ -16,6 +16,7 @@ from torch import Tensor
 
 if typing.TYPE_CHECKING:
     from vmas.simulator.core import Agent, World
+    from vmas.simulator.rendering import Geom
 
 _has_matplotlib = importlib.util.find_spec("matplotlib") is not None
 
@@ -119,7 +120,6 @@ def save_video(name: str, frame_list: list[np.array], fps: int):
         video.write(img)
     video.release()
 
-
 def x_to_rgb_colormap(
     x: np.ndarray,
     low: float = None,
@@ -129,7 +129,6 @@ def x_to_rgb_colormap(
     cmap_res: int = 10,
 ):
     from matplotlib import cm
-
     colormap = cm.get_cmap(cmap_name, cmap_res)(range(cmap_res))[:, :-1]
     if low is None:
         low = np.min(x)
@@ -146,6 +145,35 @@ def x_to_rgb_colormap(
     rgb = t[:, None] * x_c1 + (1 - t)[:, None] * x_c0
     colors = np.concatenate([rgb, alpha * np.ones((rgb.shape[0], 1))], axis=-1)
     return colors
+
+
+
+
+class RenderUtils:
+    @staticmethod
+    def render_communication_lines(agents: list[Agent], comms_range: float, env_index: int) -> list[Geom]:
+        from vmas.simulator import rendering
+        geoms: list[Geom] = []
+        for i, agent1 in enumerate(agents):
+            for j, agent2 in enumerate(agents):
+                if j <= i:
+                    continue
+                agent_dist = torch.linalg.vector_norm(
+                    agent1.state.pos - agent2.state.pos, dim=-1
+                )
+                if agent_dist[env_index] <= comms_range:
+                    color = Color.BLACK.value
+                    line = rendering.Line(
+                        (agent1.state.pos[env_index]),
+                        (agent2.state.pos[env_index]),
+                        width=1,
+                    )
+                    xform = rendering.Transform()
+                    line.add_attr(xform)
+                    line.set_color(*color)
+                    geoms.append(line)
+        return geoms
+        
 
 
 def extract_nested_with_index(data: Union[Tensor, dict[str, Tensor]], index: int):
