@@ -1,3 +1,4 @@
+from __future__ import annotations
 #  Copyright (c) 2022-2024.
 #  ProrokLab (https://www.proroklab.org/)
 #  All rights reserved.
@@ -6,11 +7,15 @@ import os
 import warnings
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Dict, List, Sequence, Tuple, Union
+import typing
+from typing import Sequence, Tuple, Union
 
 import numpy as np
 import torch
 from torch import Tensor
+
+if typing.TYPE_CHECKING:
+    from vmas.simulator.core import Agent, World
 
 _has_matplotlib = importlib.util.find_spec("matplotlib") is not None
 
@@ -32,13 +37,13 @@ ANGULAR_FRICTION = 0.0
 DEVICE_TYPING = Union[torch.device, str, int]
 
 
-AGENT_OBS_TYPE = Union[Tensor, Dict[str, Tensor]]
-AGENT_INFO_TYPE = Dict[str, Tensor]
+AGENT_OBS_TYPE = Union[Tensor, dict[str, Tensor]]
+AGENT_INFO_TYPE = dict[str, Tensor]
 AGENT_REWARD_TYPE = Tensor
 
-OBS_TYPE = Union[List[AGENT_OBS_TYPE], Dict[str, AGENT_OBS_TYPE]]
-INFO_TYPE = Union[List[AGENT_INFO_TYPE], Dict[str, AGENT_INFO_TYPE]]
-REWARD_TYPE = Union[List[AGENT_REWARD_TYPE], Dict[str, AGENT_REWARD_TYPE]]
+OBS_TYPE = Union[list[AGENT_OBS_TYPE], dict[str, AGENT_OBS_TYPE]]
+INFO_TYPE = Union[list[AGENT_INFO_TYPE], dict[str, AGENT_INFO_TYPE]]
+REWARD_TYPE = Union[list[AGENT_REWARD_TYPE], dict[str, AGENT_REWARD_TYPE]]
 DONE_TYPE = Tensor
 
 
@@ -94,7 +99,7 @@ class Observer(ABC):
         raise NotImplementedError
 
 
-def save_video(name: str, frame_list: List[np.array], fps: int):
+def save_video(name: str, frame_list: list[np.array], fps: int):
     """Requres cv2"""
     import cv2
 
@@ -143,10 +148,10 @@ def x_to_rgb_colormap(
     return colors
 
 
-def extract_nested_with_index(data: Union[Tensor, Dict[str, Tensor]], index: int):
+def extract_nested_with_index(data: Union[Tensor, dict[str, Tensor]], index: int):
     if isinstance(data, Tensor):
         return data[index]
-    elif isinstance(data, Dict):
+    elif isinstance(data, dict):
         return {
             key: extract_nested_with_index(value, index) for key, value in data.items()
         }
@@ -192,10 +197,10 @@ class TorchUtils:
         return TorchUtils.cross(r, f)
 
     @staticmethod
-    def to_numpy(data: Union[Tensor, Dict[str, Tensor], List[Tensor]]):
+    def to_numpy(data: Union[Tensor, dict[str, Tensor], list[Tensor]]):
         if isinstance(data, Tensor):
             return data.cpu().detach().numpy()
-        elif isinstance(data, Dict):
+        elif isinstance(data, dict):
             return {key: TorchUtils.to_numpy(value) for key, value in data.items()}
         elif isinstance(data, Sequence):
             return [TorchUtils.to_numpy(value) for value in data]
@@ -203,17 +208,17 @@ class TorchUtils:
             raise NotImplementedError(f"Invalid type of data {data}")
 
     @staticmethod
-    def recursive_clone(value: Union[Dict[str, Tensor], Tensor]):
+    def recursive_clone(value: Union[dict[str, Tensor], Tensor]):
         if isinstance(value, Tensor):
             return value.clone()
         else:
             return {key: TorchUtils.recursive_clone(val) for key, val in value.items()}
 
     @staticmethod
-    def recursive_require_grad_(value: Union[Dict[str, Tensor], Tensor, List[Tensor]]):
+    def recursive_require_grad_(value: Union[dict[str, Tensor], Tensor, list[Tensor]]):
         if isinstance(value, Tensor) and torch.is_floating_point(value):
             value.requires_grad_(True)
-        elif isinstance(value, Dict):
+        elif isinstance(value, dict):
             for val in value.values():
                 TorchUtils.recursive_require_grad_(val)
         else:
@@ -230,12 +235,12 @@ class TorchUtils:
 class ScenarioUtils:
     @staticmethod
     def spawn_entities_randomly(
-        entities,
-        world,
-        env_index: int,
+        entities: list[Agent],
+        world: World,
+        env_index: int | None,
         min_dist_between_entities: float,
-        x_bounds: Tuple[int, int],
-        y_bounds: Tuple[int, int],
+        x_bounds: tuple[int, int],
+        y_bounds: tuple[int, int],
         occupied_positions: Tensor = None,
         disable_warn: bool = False,
     ):
@@ -310,7 +315,7 @@ class ScenarioUtils:
         return pos
 
     @staticmethod
-    def check_kwargs_consumed(dictionary_of_kwargs: Dict, warn: bool = True):
+    def check_kwargs_consumed(dictionary_of_kwargs: dict, warn: bool = True):
         if len(dictionary_of_kwargs) > 0:
             message = f"Scenario kwargs: {dictionary_of_kwargs} passed but not used by the scenario."
             if warn:

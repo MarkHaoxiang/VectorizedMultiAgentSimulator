@@ -5,7 +5,7 @@
 from typing import Optional, Union
 
 from vmas import scenarios
-from vmas.simulator.environment import Environment, Wrapper
+from vmas.simulator.environment import ConfigurableEnvironment, Environment, Wrapper
 from vmas.simulator.scenario import BaseScenario
 from vmas.simulator.utils import DEVICE_TYPING
 
@@ -24,6 +24,7 @@ def make_env(
     grad_enabled: bool = False,
     terminated_truncated: bool = False,
     wrapper_kwargs: Optional[dict] = None,
+    configurable_env: bool = False,
     **kwargs,
 ):
     """Create a vmas environment.
@@ -75,8 +76,12 @@ def make_env(
         if not scenario.endswith(".py"):
             scenario += ".py"
         scenario = scenarios.load(scenario).Scenario()
+    if configurable_env:
+        environment = ConfigurableEnvironment
+    else:
+        environment = Environment
 
-    env = Environment(
+    env = environment(
         scenario,
         num_envs=num_envs,
         device=device,

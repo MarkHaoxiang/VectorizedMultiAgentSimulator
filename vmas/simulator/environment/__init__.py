@@ -3,7 +3,7 @@
 #  All rights reserved.
 from enum import Enum
 
-from vmas.simulator.environment.environment import Environment
+from vmas.simulator.environment.environment import ConfigurableEnvironment, Environment
 
 
 class Wrapper(Enum):

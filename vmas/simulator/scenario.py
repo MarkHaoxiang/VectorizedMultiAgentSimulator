@@ -1,9 +1,10 @@
+from __future__ import annotations
 #  Copyright (c) 2022-2024.
 #  ProrokLab (https://www.proroklab.org/)
 #  All rights reserved.
 import typing
 from abc import ABC, abstractmethod
-from typing import List, Optional, Generic, TypeVar, Type, Literal
+from typing import Type
 from pydantic import BaseModel, ConfigDict
 from gym.spaces import Space
 import torch
@@ -26,10 +27,7 @@ class BaseScenarioConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-Config = TypeVar("Config", bound=BaseScenarioConfig)
-
-
-class BaseScenario(Generic[Config], ABC):
+class BaseScenario[Config: BaseScenarioConfig](ABC):
     """Base class for scenarios.
 
     This is the class that scenarios inherit from.
@@ -95,7 +93,7 @@ class BaseScenario(Generic[Config], ABC):
         self._world = self.make_world(batch_dim, device, **kwargs)
         return self._world
 
-    def env_reset_world_at(self, env_index: typing.Optional[int]):
+    def env_reset_world_at(self, env_index: int | None):
         # Do not override
         self.world.reset(env_index)
         self.reset_world_at(env_index)
@@ -108,7 +106,7 @@ class BaseScenario(Generic[Config], ABC):
         self.process_action(agent)
         agent.dynamics.check_and_process_action()
     
-    def _setup_config(self, config: Optional[Config], **kwargs) -> None:
+    def _setup_config(self, config: Config | None, **kwargs) -> None:
         if config is None:
             self.config = self.config_class(**kwargs)
         else:
@@ -122,7 +120,7 @@ class BaseScenario(Generic[Config], ABC):
         self,
         batch_dim: int,
         device: torch.device,
-        config: Optional[Config] = None,
+        config: Config | None = None,
         **kwargs,
     ) -> World:
         """
@@ -176,7 +174,7 @@ class BaseScenario(Generic[Config], ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def reset_world_at(self, env_index: Optional[int] = None):
+    def reset_world_at(self, env_index: int | None = None):
         """Resets the world at the specified env_index.
 
         When a ``None`` index is passed, the world should make a vectorized (batched) reset.
@@ -375,7 +373,7 @@ class BaseScenario(Generic[Config], ABC):
         """
         return {}
 
-    def extra_render(self, env_index: int = 0) -> "List[Geom]":
+    def extra_render(self, env_index: int = 0) -> "list[Geom]":
         """
         This function facilitates additional user/scenario-level rendering for a specific environment index.
 
@@ -481,7 +479,7 @@ class DesignableScenario(BaseScenario, ABC):
         self._design = None
 
     @property
-    def design(self) -> List:
+    def design(self) -> list:
         """A list of length self.world.batch_dim, where each element encodes the design of the corresponding level."""
         assert self._design is not None, "You first need to set `self._design`"
         return self._design
@@ -490,9 +488,9 @@ class DesignableScenario(BaseScenario, ABC):
         self, scenario_design, env_index: typing.Optional[int] = None
     ):
         if env_index is None:
-            self._design[env_index] = scenario_design
-        else:
             self._design = scenario_design
+        else:
+            self._design[env_index] = scenario_design
         self.env_reset_world_at(env_index)
 
     def randomize_design(self, env_index: typing.Optional[int] = None):
